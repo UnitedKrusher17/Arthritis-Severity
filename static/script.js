@@ -75,6 +75,7 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             reader.readAsDataURL(file);
         } else {
+            // Clear preview if file selection is cancelled
             imagePreview.innerHTML = '<span>Image Preview</span>';
         }
     });
@@ -83,18 +84,29 @@ document.addEventListener('DOMContentLoaded', () => {
     form.addEventListener('submit', async (event) => {
         event.preventDefault();
         
-        // CRITICAL CHECK: Ensure a file is selected
+        // REFINED CRITICAL CHECK: Check the files directly on the input element
         const file = fileInput.files[0];
         if (!file) {
-            alert('Please select an X-ray image file before analyzing.');
+            // NOTE: Changing alert() to a simple console log and return for safety, 
+            // relying on the 'required' attribute on the file input to enforce selection.
+            console.error('Submission blocked: No file selected.');
             return;
         }
         
         // 1. Create a FormData object for file upload
-        const formData = new FormData();
-        // 2. IMPORTANT: Append the file with the key 'file'
-        // This key ('file') MUST match the check in app.py: request.files['file']
-        formData.append('file', file); 
+        const formData = new FormData(form); // Pass the form directly to capture ALL form data
+        // 2. We don't need to manually append if the input has name="file", 
+        // but we'll ensure it is present by setting it explicitly just in case.
+        // It's already named 'file' in the HTML, so this is technically redundant but harmless.
+        
+        // This is the CRITICAL line. We check the 'file' input specifically.
+        if (!formData.has('file') || !formData.get('file').size) {
+            // This extra check catches cases where the file input is present but empty or invalid
+            console.error('FormData is missing the file part.');
+            resultOutput.innerHTML = `<p class="error" style="color: var(--color-error); padding: 15px; background: rgba(239, 68, 68, 0.1); border-radius: 8px;">Analysis Failed: Please select a valid image file.</p>`;
+            resultOutput.classList.remove('hidden');
+            return;
+        }
 
         setLoading(true);
 
@@ -102,14 +114,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/predict', {
                 method: 'POST',
                 // DO NOT set 'Content-Type': 'multipart/form-data'. 
-                // The browser sets it correctly when using FormData for file uploads.
                 body: formData,
             });
 
             const data = await response.json();
 
             if (!response.ok) {
-                // Display the error message returned from the server (e.g., 'No file part in the request')
+                // The server returned the 400 or 500 error message
                 resultOutput.innerHTML = `<p class="error" style="color: var(--color-error); padding: 15px; background: rgba(239, 68, 68, 0.1); border-radius: 8px;">Analysis Failed: ${data.error || 'Unknown server error.'}</p>`;
                 resultOutput.classList.remove('hidden');
                 console.error("Server Error:", data.error);
