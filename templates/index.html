@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Knee OA Analyzer</title>
+    <!-- Link to the custom CSS in the static folder -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body>
+    <div id="app-container">
+        <!-- Header -->
+        <header>
+            <div class="logo-container">
+                <i data-lucide="scan"></i>
+                <h1>Knee OA Classifier</h1>
+            </div>
+            <p>Analyze Kellgren-Lawrence Grade from X-Ray Image</p>
+        </header>
+
+        <!-- Main Content Grid -->
+        <main class="grid-layout">
+
+            <!-- Left Panel: Upload and Preview -->
+            <div class="card upload-card">
+                <h2>1. Upload X-Ray Image</h2>
+                
+                <div id="drop-area" class="drop-area">
+                    <input type="file" id="file-input" accept="image/*" hidden>
+                    <div class="drop-message">
+                        <i data-lucide="upload-cloud" class="icon-large"></i>
+                        <p>Drag & drop image here, or <span class="browse-link" onclick="document.getElementById('file-input').click()">click to browse</span></p>
+                        <small>Supported formats: JPEG, PNG</small>
+                    </div>
+                </div>
+
+                <div id="preview-container" class="preview-container hidden">
+                    <h3>Image Preview</h3>
+                    <img id="image-preview" alt="X-Ray Preview">
+                    <button id="reset-button" class="btn btn-secondary mt-4">
+                        <i data-lucide="refresh-ccw"></i> Change Image
+                    </button>
+                </div>
+
+                <button id="analyze-button" class="btn btn-primary mt-6" disabled>
+                    <i data-lucide="zap"></i> Analyze Image
+                </button>
+            </div>
+
+            <!-- Right Panel: Results -->
+            <div class="card result-card">
+                <h2>2. Analysis & Report</h2>
+                
+                <div id="loading-spinner" class="spinner-container hidden">
+                    <div class="spinner"></div>
+                    <p>Analyzing image and generating AI report...</p>
+                </div>
+
+                <div id="result-display" class="hidden">
+                    <div class="result-box">
+                        <div class="grade-label">KL Grade</div>
+                        <div id="grade-output" class="grade-output">--</div>
+                    </div>
+                    
+                    <div class="report-section">
+                        <h3><i data-lucide="text-select"></i> Detailed Report (Gemini-Generated)</h3>
+                        <p id="report-output" class="report-content">Upload an image and click "Analyze Image" to receive a diagnosis and a detailed, patient-friendly report.</p>
+                    </div>
+                </div>
+                
+                <div id="initial-message" class="initial-message">
+                    <i data-lucide="flask-conical"></i>
+                    <p>The model is ready. A detailed medical summary will appear here after analysis.</p>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- Link to the custom JavaScript in the static folder -->
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+    </script>
+</body>
+</html>
