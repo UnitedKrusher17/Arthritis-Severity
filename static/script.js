@@ -1,147 +1,128 @@
-const dropArea = document.getElementById('drop-area');
-const fileInput = document.getElementById('file-input');
-const previewContainer = document.getElementById('preview-container');
-const imagePreview = document.getElementById('image-preview');
-const initialMessage = document.getElementById('initial-message');
-const resultDisplay = document.getElementById('result-display');
-const loadingSpinner = document.getElementById('loading-spinner');
-const analyzeButton = document.getElementById('analyze-button');
-const resetButton = document.getElementById('reset-button');
-const gradeOutput = document.getElementById('grade-output');
-const reportOutput = document.getElementById('report-output');
+document.addEventListener('DOMContentLoaded', () => {
+    const form = document.getElementById('uploadForm');
+    const fileInput = document.getElementById('fileInput');
+    const imagePreview = document.getElementById('imagePreview');
+    // Using IDs from the HTML Canvas
+    const loading = document.getElementById('loading');
+    const resultOutput = document.getElementById('resultOutput');
+    const submitBtn = document.getElementById('submitBtn');
 
-let uploadedFile = null;
+    // --- Utility Functions ---
 
-// --- Helper Functions ---
-
-function showMessage(type, message) {
-    // Simple way to display user feedback (using the report output area)
-    gradeOutput.textContent = '--';
-    reportOutput.textContent = message;
-    reportOutput.className = type === 'error' ? 'text-red-500 font-bold' : 'text-gray-400';
-    resultDisplay.classList.remove('hidden');
-    initialMessage.classList.add('hidden');
-}
-
-function resetUI() {
-    uploadedFile = null;
-    imagePreview.src = '';
-    
-    // Show initial upload area
-    dropArea.classList.remove('hidden');
-    previewContainer.classList.add('hidden');
-    
-    // Reset buttons and messages
-    analyzeButton.disabled = true;
-    analyzeButton.innerHTML = '<i data-lucide="zap"></i> Analyze Image';
-    loadingSpinner.classList.add('hidden');
-    resultDisplay.classList.add('hidden');
-    initialMessage.classList.remove('hidden');
-    gradeOutput.textContent = '--';
-    reportOutput.textContent = 'The model is ready. A detailed medical summary will appear here after analysis.';
-    lucide.createIcons(); // Re-initialize icons
-}
-
-function handleFile(file) {
-    if (file && file.type.startsWith('image/')) {
-        uploadedFile = file;
-        const reader = new FileReader();
+    // Function to show/hide loading spinner and manage button state
+    const setLoading = (isLoading) => {
+        loading.classList.toggle('hidden', !isLoading);
+        resultOutput.classList.add('hidden');
+        submitBtn.disabled = isLoading;
+        submitBtn.textContent = isLoading ? 'Analyzing...' : 'Analyze Image';
         
-        reader.onload = function(e) {
-            imagePreview.src = e.target.result;
-            
-            // Toggle visibility
-            dropArea.classList.add('hidden');
-            initialMessage.classList.add('hidden');
-            previewContainer.classList.remove('hidden');
-            resultDisplay.classList.add('hidden');
-            
-            // Enable analyze button
-            analyzeButton.disabled = false;
-        };
-        reader.readAsDataURL(file);
-    } else {
-        showMessage('error', 'Please upload a valid image file (JPEG or PNG).');
-    }
-}
-
-// --- API Communication ---
-
-async function analyzeImage() {
-    if (!uploadedFile) {
-        showMessage('error', 'Please select an image before analyzing.');
-        return;
-    }
-
-    // Set UI state to loading
-    loadingSpinner.classList.remove('hidden');
-    resultDisplay.classList.add('hidden');
-    analyzeButton.disabled = true;
-    analyzeButton.innerHTML = '<div class="spinner-small"></div> Analyzing...';
-
-    const formData = new FormData();
-    formData.append('image', uploadedFile);
-
-    try {
-        const response = await fetch('/predict', {
-            method: 'POST',
-            body: formData,
-        });
-
-        const data = await response.json();
-
-        if (data.status === 'success') {
-            gradeOutput.textContent = data.grade;
-            reportOutput.textContent = data.report;
-            reportOutput.className = 'report-content'; // Reset styling
-
-            // Display results
-            resultDisplay.classList.remove('hidden');
-        } else {
-            // Handle error from Flask backend
-            showMessage('error', `Prediction Failed: ${data.error}`);
+        if (!isLoading) {
+             // Clear the result area unless we are actively displaying a new result
+             resultOutput.innerHTML = '';
         }
-    } catch (error) {
-        // Handle network/fetch errors
-        console.error("Fetch Error:", error);
-        showMessage('error', 'Network error. Could not connect to the analysis server.');
-    } finally {
-        // Reset analysis button state
-        loadingSpinner.classList.add('hidden');
-        analyzeButton.disabled = false;
-        analyzeButton.innerHTML = '<i data-lucide="zap"></i> Analyze Image';
-        lucide.createIcons();
-    }
-}
+    };
 
-// --- Event Listeners ---
+    // Function to display the result (including probability bars)
+    const displayResult = (data) => {
+        resultOutput.classList.remove('hidden');
+        
+        // Ensure probabilities array is available and length is 5 (for KL Grades 0-4)
+        const probabilities = Array.isArray(data.probabilities) && data.probabilities.length === 5 ? data.probabilities : [0, 0, 0, 0, 0];
 
-// Drag and Drop functionality
-dropArea.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    dropArea.classList.add('drag-over');
+        // Map the result data to the HTML structure (using classes defined in style.css)
+        resultOutput.innerHTML = `
+            <div class="result-box">
+                <p class="grade-label">Predicted Kellgren-Lawrence Grade</p>
+                <div class="grade-output">Grade ${data.grade}</div>
+            </div>
+
+            <div class="report-section">
+                <h3>Prediction Summary</h3>
+                <p class="report-content">${data.description}</p>
+            </div>
+            
+            <div class="report-section">
+                <h3>Confidence Breakdown</h3>
+                <div class="probability-chart mt-4">
+                    ${probabilities.map((prob, index) => {
+                        const percent = Math.round(prob * 100);
+                        // Using a simple CSS structure for bars
+                        return `
+                            <div class="bar-container" style="margin-bottom: 8px; display: flex; align-items: center; gap: 10px;">
+                                <span class="label" style="width: 70px; font-weight: 600;">Grade ${index}</span>
+                                <div class="bar-visual" style="flex-grow: 1; height: 18px; background-color: var(--color-text-muted); border-radius: 4px; overflow: hidden;">
+                                    <div style="width: ${percent}%; height: 100%; background-color: var(--color-primary); transition: width 0.5s;"></div>
+                                </div>
+                                <span style="font-weight: 700; width: 40px; text-align: right;">${percent}%</span>
+                            </div>
+                        `;
+                    }).join('')}
+                </div>
+            </div>
+        `;
+    };
+
+    // --- Event Listeners ---
+
+    // 1. Image Preview Handler (Shows the selected image)
+    fileInput.addEventListener('change', (event) => {
+        const file = event.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                // Ensure the preview content uses a standard img tag
+                imagePreview.innerHTML = `<img src="${e.target.result}" alt="X-Ray Preview" style="max-width: 100%; max-height: 250px; border-radius: 8px;">`;
+            };
+            reader.readAsDataURL(file);
+        } else {
+            imagePreview.innerHTML = '<span>Image Preview</span>';
+        }
+    });
+
+    // 2. Form Submission Handler (Sends the data to the server)
+    form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        
+        // CRITICAL CHECK: Ensure a file is selected
+        const file = fileInput.files[0];
+        if (!file) {
+            alert('Please select an X-ray image file before analyzing.');
+            return;
+        }
+        
+        // 1. Create a FormData object for file upload
+        const formData = new FormData();
+        // 2. IMPORTANT: Append the file with the key 'file'
+        // This key ('file') MUST match the check in app.py: request.files['file']
+        formData.append('file', file); 
+
+        setLoading(true);
+
+        try {
+            const response = await fetch('/predict', {
+                method: 'POST',
+                // DO NOT set 'Content-Type': 'multipart/form-data'. 
+                // The browser sets it correctly when using FormData for file uploads.
+                body: formData,
+            });
+
+            const data = await response.json();
+
+            if (!response.ok) {
+                // Display the error message returned from the server (e.g., 'No file part in the request')
+                resultOutput.innerHTML = `<p class="error" style="color: var(--color-error); padding: 15px; background: rgba(239, 68, 68, 0.1); border-radius: 8px;">Analysis Failed: ${data.error || 'Unknown server error.'}</p>`;
+                resultOutput.classList.remove('hidden');
+                console.error("Server Error:", data.error);
+            } else {
+                displayResult(data);
+            }
+
+        } catch (error) {
+            console.error('Fetch error:', error);
+            resultOutput.innerHTML = `<p class="error" style="color: var(--color-error); padding: 15px; background: rgba(239, 68, 68, 0.1); border-radius: 8px;">Network Error: Could not reach the server. Check console for details.</p>`;
+            resultOutput.classList.remove('hidden');
+        } finally {
+            setLoading(false);
+        }
+    });
 });
-
-dropArea.addEventListener('dragleave', () => {
-    dropArea.classList.remove('drag-over');
-});
-
-dropArea.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropArea.classList.remove('drag-over');
-    const file = e.dataTransfer.files[0];
-    handleFile(file);
-});
-
-// Input click functionality
-fileInput.addEventListener('change', (e) => {
-    const file = e.target.files[0];
-    handleFile(file);
-});
-
-// Button actions
-analyzeButton.addEventListener('click', analyzeImage);
-resetButton.addEventListener('click', resetUI);
-
-// Initial setup
-resetUI(); // Ensures UI starts in a clean state
