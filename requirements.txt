@@ -1,0 +1,8 @@
+flask
+gunicorn
+requests
+tensorflow
+keras
+numpy
+Pillow
+google-genai
