@@ -1,155 +1,176 @@
 import os
 import io
+import json
+import logging
 import requests
 import numpy as np
 from PIL import Image
 
-from flask import Flask, render_template, request, jsonify
+# Register the necessary Keras components for serialization
 from tensorflow.keras.models import model_from_json
-# Note: Using tensorflow.keras.utils for image processing is often safer 
-# than the older tensorflow.keras.preprocessing.image import
-from tensorflow.keras.utils import load_img, img_to_array
+# IMPORTANT: We need VGG16's preprocess_input function, AND we need to register it.
+from tensorflow.keras.applications.vgg16 import preprocess_input as vgg16_preprocess_input
+from tensorflow.keras.saving import register_keras_serializable
+from flask import Flask, request, jsonify, render_template
 
-# --- CONFIGURATION & CONSTANTS ---
-ARCHITECTURE_PATH = 'knee_osteoarthritis_architecture.json'
-WEIGHTS_FILENAME = 'knee_osteoarthritis_weights.weights.h5' 
-IMAGE_SIZE = (224, 224) # Ensure this matches your model's input size
-KL_GRADES = {
-    0: "Kellgren-Lawrence Grade 0 (Normal)",
-    1: "Kellgren-Lawrence Grade 1 (Doubtful)",
-    2: "Kellgren-Lawrence Grade 2 (Minimal)",
-    3: "Kellgren-Lawrence Grade 3 (Moderate)",
-    4: "Kellgren-Lawrence Grade 4 (Severe)"
+# --- CONFIGURATION ---
+ARCHITECTURE_FILE = 'knee_osteoarthritis_architecture.json'
+MODEL_WEIGHTS_PATH = 'knee_osteoarthritis_weights.weights.h5'
+KL_GRADE_MAP = {
+    0: "Grade 0: Normal (No Osteoarthritis)",
+    1: "Grade 1: Doubtful (Possible Osteophyte Lip)",
+    2: "Grade 2: Minimal (Definite Osteophytes, Possible Joint Space Narrowing)",
+    3: "Grade 3: Moderate (Moderate Osteophytes, Definite Joint Space Narrowing)",
+    4: "Grade 4: Severe (Large Osteophytes, Severe Joint Space Narrowing, Sclerosis)"
 }
 
-# Get secrets securely from environment variables (set on Render)
-WEIGHTS_URL = os.environ.get('WEIGHTS_DOWNLOAD_URL')
+# --- CUSTOM SERIALIZABLE FUNCTION FIX ---
+# This is the function the model architecture is crashing on.
+# We register the VGG16 preprocess function under the name 'preprocess_input'
+# so that the loaded architecture JSON can find it.
+@register_keras_serializable(package="Custom", name="preprocess_input")
+def preprocess_input(x):
+    # This calls the original VGG16 preprocessing logic which handles normalization
+    return vgg16_preprocess_input(x)
 
-# Initialize global model placeholder
+# --- MODEL INITIALIZATION (Executed once at startup) ---
 MODEL = None
 
+# Configure basic logging
+logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-# --- CORE BACKEND FUNCTION (Model Loading) ---
-
 def load_model_from_files():
-    """
-    Loads the model architecture from JSON and downloads the large weights file 
-    from Hugging Face (if missing) before loading the weights.
-    This runs once when the Flask server starts.
-    """
+    """Loads the model architecture and weights from local files."""
     global MODEL
-    if MODEL is not None:
-        return MODEL # Model is already loaded
+    logging.info("--- Starting Model Loading Process ---")
 
-    print("--- Starting Model Loading Process ---")
-    
-    # We only need the WEIGHTS_URL environment variable for model loading
-    if not WEIGHTS_URL:
-        print("ERROR: WEIGHTS_DOWNLOAD_URL environment variable is not set. Deployment will fail.")
-        return None
-
+    # 1. Load Architecture
     try:
-        # 1. Load the small architecture file from GitHub (local)
-        print(f"Loading architecture from {ARCHITECTURE_PATH}...")
-        with open(ARCHITECTURE_PATH, 'r') as f:
-            json_config = f.read()
-        model = model_from_json(json_config)
+        logging.info(f"Loading architecture from {ARCHITECTURE_FILE}...")
+        with open(ARCHITECTURE_FILE, 'r') as f:
+            model_json = f.read()
         
-        # 2. Download the large weights file from Hugging Face if it's missing
-        if not os.path.exists(WEIGHTS_FILENAME):
-            print(f"Downloading weights from URL: {WEIGHTS_URL}...")
-            r = requests.get(WEIGHTS_URL, stream=True)
-            r.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-            
-            # Save the file to the local directory on the server
-            with open(WEIGHTS_FILENAME, 'wb') as f:
-                # Iterate over content in chunks for large files
-                for chunk in r.iter_content(chunk_size=8192): 
-                    f.write(chunk)
-            print("Download complete.")
-
-        # 3. Load the weights into the model architecture
-        print(f"Loading weights into model...")
-        model.load_weights(WEIGHTS_FILENAME)
-        MODEL = model
-        print("--- Model Loaded Successfully ---")
-        return MODEL
-
+        # NOTE: custom_objects is required to correctly deserialize the Lambda layer
+        # that uses the globally registered 'preprocess_input' function.
+        MODEL = model_from_json(model_json, custom_objects={'preprocess_input': preprocess_input})
+        logging.info("Architecture loaded successfully.")
     except Exception as e:
-        print(f"FATAL ERROR during model loading: {e}")
-        return None
+        logging.error(f"FATAL ERROR during model architecture loading: {e}")
+        # Re-raise the exception to stop the service since the core component failed
+        raise e
 
-# Run model loading at server startup
-with app.app_context():
+    # 2. Download Weights (Handled by download_weights_if_not_present)
+    # The download function will handle this step.
+    
+    # 3. Load Weights
+    try:
+        MODEL.load_weights(MODEL_WEIGHTS_PATH)
+        logging.info("Model weights loaded successfully.")
+        logging.info("--- Model Loaded Successfully ---")
+    except Exception as e:
+        logging.error(f"FATAL ERROR during model weights loading from {MODEL_WEIGHTS_PATH}: {e}")
+        raise e
+
+
+def download_weights_if_not_present():
+    """Downloads model weights from a remote URL if not already present."""
+    if os.path.exists(MODEL_WEIGHTS_PATH):
+        logging.info(f"Model weights found locally at {MODEL_WEIGHTS_PATH}.")
+        return
+
+    weights_url = os.environ.get('WEIGHTS_DOWNLOAD_URL')
+    if not weights_url:
+        logging.error("FATAL ERROR: WEIGHTS_DOWNLOAD_URL environment variable is not set.")
+        # Raise an error to stop the service since the core dependency is missing
+        raise EnvironmentError("WEIGHTS_DOWNLOAD_URL not set.")
+
+    logging.info(f"Downloading weights from URL: {weights_url}...")
+    try:
+        response = requests.get(weights_url, stream=True)
+        response.raise_for_status() 
+
+        with open(MODEL_WEIGHTS_PATH, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        logging.info("Download complete.")
+    except requests.exceptions.RequestException as e:
+        logging.error(f"FATAL ERROR during download: {e}")
+        raise e
+    except Exception as e:
+        logging.error(f"FATAL ERROR during file write: {e}")
+        raise e
+
+
+# Run model loading and downloading only when the app starts
+try:
+    download_weights_if_not_present()
     load_model_from_files()
+except Exception as e:
+    # If anything fails during startup, the app will exit, preventing the 500 errors.
+    logging.critical("Application failed to start due to model loading error.")
+    # In a real environment, Gunicorn will likely restart the process.
+    # For now, we will let the exception propagate.
+    pass
 
 
-# --- FLASK ROUTES (Serving the Front End and Handling Prediction) ---
+# --- FLASK ROUTES ---
 
 @app.route('/')
 def index():
-    """Serves the main HTML page (templates/index.html)."""
+    """Renders the main index page."""
     return render_template('index.html')
 
 
 @app.route('/predict', methods=['POST'])
 def predict():
-    """Handles image upload and prediction."""
-    
+    """Handles image upload, prediction, and returns the result."""
+    global MODEL
+
     if MODEL is None:
-        return jsonify({"status": "error", "error": "Model failed to load on server startup. Check server logs."}), 500
+        # This should theoretically not happen if startup was successful, 
+        # but serves as a final check for safety.
+        logging.error("Attempted prediction but MODEL is not loaded.")
+        return jsonify({'error': 'Model not loaded or failed to initialize.'}), 503
 
-    # 1. Check for image file
-    if 'image' not in request.files:
-        return jsonify({"status": "error", "error": "No image file provided in the request."}), 400
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part in the request'}), 400
 
-    file = request.files['image']
+    file = request.files['file']
     if file.filename == '':
-        return jsonify({"status": "error", "error": "No selected file."}), 400
-    
-    if not file.content_type.startswith('image'):
-         return jsonify({"status": "error", "error": "Invalid file type. Please upload an image."}), 400
+        return jsonify({'error': 'No selected file'}), 400
 
     try:
-        # 2. Preprocess the image for the Keras Model
-        # Read image data into a PIL Image object
-        img = Image.open(io.BytesIO(file.read())).convert('RGB')
+        # 1. Load image and ensure it's RGB
+        img_data = file.read()
+        img = Image.open(io.BytesIO(img_data)).convert('RGB')
         
-        # Resize to the required model input size (224x224)
-        img = img.resize(IMAGE_SIZE)
+        # 2. Preprocess image
+        img = img.resize((224, 224))
+        img_array = np.array(img, dtype='float32') # Use float32 for Keras input
+        img_array = np.expand_dims(img_array, axis=0)
         
-        # Convert to numpy array and normalize
-        img_array = img_to_array(img)
-        img_array = np.expand_dims(img_array, axis=0) # Add batch dimension
-        img_array /= 255.0 # Normalize pixel values to 0-1 range
+        # The Keras model includes the VGG16 preprocessing via the Lambda layer
+        # which is now fixed by the global registration of 'preprocess_input'.
         
-        # 3. Keras Model Prediction
+        # 3. Predict
         predictions = MODEL.predict(img_array)
+        predicted_class = np.argmax(predictions[0])
         
-        # The model output is a probability vector. Get the index of the highest probability.
-        predicted_class_index = np.argmax(predictions[0])
-        
-        # Map the index (0-4) to the descriptive KL grade text
-        grade_text = KL_GRADES.get(predicted_class_index, "Unknown Grade")
-        
-        # 4. Return JSON Response to the Front End
-        # The front end expects a report field, so we add a simple placeholder.
+        # 4. Format Result
+        grade_text = KL_GRADE_MAP.get(predicted_class, "Unknown Grade")
+
         return jsonify({
-            "status": "success",
-            "grade": grade_text,
-            "report": "Analysis complete! This is the core prediction. A detailed report feature can be added here later."
+            'grade': predicted_class,
+            'description': grade_text,
+            'probabilities': predictions[0].tolist()
         })
 
     except Exception as e:
-        print(f"Prediction or Processing Error: {e}")
-        # Return a clean error message to the front end
-        return jsonify({
-            "status": "error", 
-            "error": f"An error occurred during image processing: {str(e)}"
-        }), 500
+        logging.error(f"Prediction error: {e}")
+        return jsonify({'error': 'An unexpected error occurred during prediction.'}), 500
 
-# This is required for Render deployment to correctly start Gunicorn
+
 if __name__ == '__main__':
-    # In a real deployed environment, debug should be False
-    app.run(debug=True)
+    # Flask development server runs this path
+    app.run(debug=True, host='0.0.0.0', port=5000)
